@@ -31,7 +31,15 @@ export function ProjectProvider({ children }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
 
-  const [columnOrders, setColumnOrders] = useState({});
+  // Initialize "columnOrders" from localStorage
+  const [columnOrders, setColumnOrders] = useState(() => {
+    try {
+      const stored = localStorage.getItem("columnOrders");
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
 
   useEffect(() => {
     if (!projectId || columns.length === 0) return;
@@ -43,6 +51,14 @@ export function ProjectProvider({ children }) {
       }));
     }
   }, [projectId, columns, columnOrders]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("columnOrders", JSON.stringify(columnOrders));
+    } catch {
+      // localStorage unavailable — fail silently
+    }
+  }, [columnOrders]);
 
   const refreshProject = useCallback(
     async (id, targetPage, preferredSize) => {
