@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from app import models
-from app.api.endpoints.auth_password import _hash_token
 from app.services.auth_service import create_user, verify_password
 
 
