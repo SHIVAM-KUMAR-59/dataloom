@@ -289,26 +289,85 @@ def change_cell_value(df: pd.DataFrame, row_index: int, col_index: int, value) -
     return df
 
 
-def fill_empty(df: pd.DataFrame, fill_value, column_index: int = None) -> pd.DataFrame:
-    """Fill empty/NaN cells with a specified value.
+def fill_empty(
+    df: pd.DataFrame,
+    fill_value=None,
+    column_index: int = None,
+    strategy: str = "custom",
+) -> pd.DataFrame:
+    """Fill empty/NaN cells using a specified strategy.
 
     Args:
         df: Source DataFrame.
-        fill_value: Value to fill empty cells with.
-        column_index: Optional specific column index. If None, fills all columns.
+        fill_value: Literal fill value used for the custom strategy.
+        column_index: Optional specific column index. If None, fills all columns
+            for custom, ffill, and bfill strategies.
+        strategy: One of custom, mean, median, mode, ffill, or bfill.
 
     Returns:
         DataFrame with empty cells filled.
     """
+    valid_strategies = ("custom", "mean", "median", "mode", "ffill", "bfill")
+
+    if strategy not in valid_strategies:
+        raise TransformationError(f"Unsupported fill strategy: '{strategy}'")
+
+    if strategy == "custom" and fill_value is None:
+        raise TransformationError("A fill value is required when using the custom strategy")
+
     df = df.copy()
+
     if column_index is not None:
         if column_index < 0 or column_index >= len(df.columns):
             raise TransformationError(f"Column index {column_index} out of range")
+
         column_name = df.columns[column_index]
-        df[column_name] = df[column_name].fillna(fill_value)
-    else:
-        df = df.fillna(fill_value)
-    return df
+        series = df[column_name]
+
+        if strategy == "custom":
+            df[column_name] = series.fillna(fill_value)
+
+        elif strategy == "mean":
+            numeric_series = pd.to_numeric(series, errors="coerce")
+            if numeric_series.dropna().empty:
+                raise TransformationError(f"Cannot compute mean on non-numeric column '{column_name}'")
+
+            computed_fill_value = round(float(numeric_series.mean()), 2)
+            df[column_name] = series.fillna(computed_fill_value)
+
+        elif strategy == "median":
+            numeric_series = pd.to_numeric(series, errors="coerce")
+            if numeric_series.dropna().empty:
+                raise TransformationError(f"Cannot compute median on non-numeric column '{column_name}'")
+
+            computed_fill_value = round(float(numeric_series.median()), 2)
+            df[column_name] = series.fillna(computed_fill_value)
+
+        elif strategy == "mode":
+            mode_value = series.mode(dropna=True)
+            if mode_value.empty:
+                raise TransformationError(f"Cannot compute mode: column '{column_name}' has no non-empty values")
+
+            df[column_name] = series.fillna(mode_value.iloc[0])
+
+        elif strategy == "ffill":
+            df[column_name] = series.ffill()
+
+        elif strategy == "bfill":
+            df[column_name] = series.bfill()
+
+        return df
+
+    if strategy == "custom":
+        return df.fillna(fill_value)
+
+    if strategy == "ffill":
+        return df.ffill()
+
+    if strategy == "bfill":
+        return df.bfill()
+
+    raise TransformationError(f"Strategy '{strategy}' requires a specific column to be selected")
 
 
 def rename_column(df: pd.DataFrame, col_index: int, new_name: str) -> pd.DataFrame:
@@ -764,7 +823,11 @@ TRANSFORMATION_REGISTRY: dict[OperationType, TransformationSpec] = {
         params_field="fill_empty_params",
         missing_error="Fill parameters required",
         persist=True,
-        build_args=lambda d: (d["fill_empty_params"]["fill_value"], d["fill_empty_params"].get("index")),
+        build_args=lambda d: (
+            d["fill_empty_params"].get("fill_value"),
+            d["fill_empty_params"].get("index"),
+            d["fill_empty_params"].get("strategy", "custom"),
+        ),
     ),
     OperationType.renameCol: TransformationSpec(
         func="rename_column",
