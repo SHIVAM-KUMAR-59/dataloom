@@ -1,14 +1,14 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import MeltForm from "../Components/forms/MeltForm";
-import { transformProject, getProjectDetails } from "../api";
+import { PIVOT_TABLES } from "../constants/operationTypes";
+import PivotTableForm from "../Components/forms/PivotTableForm";
+import { transformProject } from "../api";
 import { useProjectContext } from "../context/ProjectContext";
 import usePreviewSave from "../hooks/usePreviewSave";
 
 vi.mock("../api", () => ({
   transformProject: vi.fn(),
-  getProjectDetails: vi.fn(),
 }));
 
 vi.mock("../context/ProjectContext", () => ({
@@ -20,17 +20,48 @@ vi.mock("../hooks/usePreviewSave", () => ({
 }));
 
 vi.mock("../Components/common/ColumnMultiSelect", () => ({
-  default: ({ value, onChange, options }) => (
+  default: ({ value, onChange }) => (
     <select
       multiple
+      aria-label="Index"
       value={value}
       onChange={(event) =>
         onChange(Array.from(event.target.selectedOptions).map((option) => option.value))
       }
     >
-      {(options || []).map((option) => (
-        <option key={option} value={option}>
-          {option}
+      <option value="region">Region</option>
+      <option value="amount">Amount</option>
+    </select>
+  ),
+}));
+
+let columnSelectRenderCount = 0;
+
+vi.mock("../Components/common/ColumnSelect", () => ({
+  default: ({ value, onChange, placeholder }) => {
+    const testId = `pivot-column-select-${columnSelectRenderCount % 2}`;
+    columnSelectRenderCount += 1;
+
+    return (
+      <select data-testid={testId} value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">{placeholder}</option>
+        <option value="amount">Amount</option>
+        <option value="created_at">Created At</option>
+      </select>
+    );
+  },
+}));
+
+vi.mock("../Components/common/Select", () => ({
+  default: ({ value, onChange, options }) => (
+    <select
+      aria-label="Aggregation Function"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
         </option>
       ))}
     </select>
@@ -41,8 +72,14 @@ const mockEnterPreviewMode = vi.fn();
 const mockCancelPreview = vi.fn();
 const mockHandleSave = vi.fn();
 
-const renderForm = async ({ isPreviewMode = false, onClose = vi.fn(), saving = false } = {}) => {
+const renderForm = ({
+  isPreviewMode = false,
+  onClose = vi.fn(),
+  saving = false,
+  pageSize = 50,
+} = {}) => {
   useProjectContext.mockReturnValue({
+    pageSize,
     isPreviewMode,
     enterPreviewMode: mockEnterPreviewMode,
     cancelPreview: mockCancelPreview,
@@ -53,163 +90,129 @@ const renderForm = async ({ isPreviewMode = false, onClose = vi.fn(), saving = f
     handleSave: mockHandleSave,
   });
 
-  const utils = render(<MeltForm projectId="project-123" onClose={onClose} />);
-
-  await waitFor(() => {
-    expect(getProjectDetails).toHaveBeenCalledWith("project-123");
-  });
-
-  return { onClose, ...utils };
+  return {
+    onClose,
+    ...render(<PivotTableForm projectId="project-123" onClose={onClose} />),
+  };
 };
 
-describe("MeltForm", () => {
+const getColumnSelects = () => [
+  screen.getByTestId("pivot-column-select-0"),
+  screen.getByTestId("pivot-column-select-1"),
+];
+
+describe("PivotTableForm", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-
-    useProjectContext.mockReturnValue({
-      isPreviewMode: false,
-      enterPreviewMode: mockEnterPreviewMode,
-      cancelPreview: mockCancelPreview,
-    });
-
-    usePreviewSave.mockReturnValue({
-      saving: false,
-      handleSave: mockHandleSave,
-    });
-
-    getProjectDetails.mockResolvedValue({
-      columns: ["amount", "created_at", "region"],
-    });
+    columnSelectRenderCount = 0;
 
     transformProject.mockResolvedValue({
-      columns: ["variable", "value"],
-      rows: [["amount", "100"]],
+      columns: ["region", "amount"],
+      rows: [["north", "100"]],
       dtypes: {
-        variable: "string",
-        value: "string",
+        region: "string",
+        amount: "integer",
       },
+      total_rows: 1,
+      total_pages: 1,
+      page: 1,
+      page_size: 50,
     });
   });
 
-  it("loads dataset columns on mount and renders the multi-selects", async () => {
-    await renderForm();
+  it("renders index, column, value, and aggregation controls", () => {
+    renderForm();
 
-    const multiSelects = screen.getAllByRole("listbox");
-
-    expect(multiSelects).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Apply Melt" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Index")).toBeInTheDocument();
+    expect(screen.getByLabelText("Aggregation Function")).toBeInTheDocument();
+    expect(screen.getByText("Column:")).toBeInTheDocument();
+    expect(screen.getByText("Value:")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
-  it("shows an error if fetching columns fails", async () => {
-    getProjectDetails.mockRejectedValue(new Error("network down"));
+  it("uses sum as the default aggregation function", () => {
+    renderForm();
 
-    render(<MeltForm projectId="project-123" onClose={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Failed to load dataset columns. Please close and reopen the form."),
-      ).toBeInTheDocument();
-    });
+    expect(screen.getByLabelText("Aggregation Function")).toHaveValue("sum");
   });
 
-  it("requires at least one ID variable", async () => {
+  it("shows a validation error when no index column is selected", async () => {
     const user = userEvent.setup();
 
-    await renderForm();
+    renderForm();
 
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Submit",
+      }),
+    );
 
     await waitFor(() => {
-      expect(screen.getByText("Please select at least one ID variable.")).toBeInTheDocument();
+      expect(screen.getByText("Please select at least one index column.")).toBeInTheDocument();
     });
 
     expect(transformProject).not.toHaveBeenCalled();
   });
 
-  it("shows an error when the same column is used as both ID and value variable", async () => {
+  it("shows a validation error when column or value is missing", async () => {
     const user = userEvent.setup();
 
-    await renderForm();
+    renderForm();
 
-    const [idSelect, valueSelect] = screen.getAllByRole("listbox");
+    await user.selectOptions(screen.getByLabelText("Index"), "region");
 
-    await user.selectOptions(idSelect, "amount");
+    await user.click(
+      screen.getByRole("button", {
+        name: "Submit",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Please select a column and a value.")).toBeInTheDocument();
+    });
+
+    expect(transformProject).not.toHaveBeenCalled();
+  });
+
+  it("submits index, column, value, and aggregation function", async () => {
+    const user = userEvent.setup();
+
+    renderForm();
+
+    await user.selectOptions(screen.getByLabelText("Index"), "region");
+
+    const [columnSelect, valueSelect] = getColumnSelects();
+
+    await user.selectOptions(columnSelect, "created_at");
+
     await user.selectOptions(valueSelect, "amount");
 
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
+    await user.selectOptions(screen.getByLabelText("Aggregation Function"), "mean");
 
-    await waitFor(() => {
-      expect(
-        screen.getByText("Columns cannot be in both ID and Value variables: amount"),
-      ).toBeInTheDocument();
-    });
-
-    expect(transformProject).not.toHaveBeenCalled();
-  });
-
-  it("defaults value variables to all non-ID columns when left empty", async () => {
-    const user = userEvent.setup();
-
-    await renderForm();
-
-    const [idSelect] = screen.getAllByRole("listbox");
-
-    await user.selectOptions(idSelect, "amount");
-
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Submit",
+      }),
+    );
 
     await waitFor(() => {
       expect(transformProject).toHaveBeenCalledWith(
         "project-123",
         {
-          operation_type: "melt",
-          melt_params: {
-            id_vars: ["amount"],
-            value_vars: ["created_at", "region"],
-            var_name: "variable",
-            value_name: "value",
+          operation_type: PIVOT_TABLES,
+          pivot_query: {
+            index: "region",
+            column: "created_at",
+            value: "amount",
+            aggfun: "mean",
           },
         },
-        { preview: true },
-      );
-    });
-  });
-
-  it("submits custom variable and value names", async () => {
-    const user = userEvent.setup();
-
-    await renderForm();
-
-    const [idSelect, valueSelect] = screen.getAllByRole("listbox");
-
-    await user.selectOptions(idSelect, "amount");
-    await user.selectOptions(valueSelect, "region");
-
-    const variableNameInput = screen.getByPlaceholderText("default: variable");
-    const valueNameInput = screen.getByPlaceholderText("default: value");
-
-    await user.clear(variableNameInput);
-    await user.type(variableNameInput, "metric");
-
-    await user.clear(valueNameInput);
-    await user.type(valueNameInput, "reading");
-
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
-
-    await waitFor(() => {
-      expect(transformProject).toHaveBeenCalledWith(
-        "project-123",
         {
-          operation_type: "melt",
-          melt_params: {
-            id_vars: ["amount"],
-            value_vars: ["region"],
-            var_name: "metric",
-            value_name: "reading",
-          },
+          preview: true,
+          page: 1,
+          pageSize: 50,
         },
-        { preview: true },
       );
     });
   });
@@ -218,107 +221,105 @@ describe("MeltForm", () => {
     const user = userEvent.setup();
 
     const response = {
-      columns: ["variable", "value"],
-      rows: [["amount", "100"]],
-      dtypes: {},
+      columns: ["region", "amount"],
+      rows: [["north", 100]],
+      dtypes: {
+        region: "string",
+        amount: "integer",
+      },
+      total_rows: 1,
+      total_pages: 1,
+      page: 1,
+      page_size: 50,
     };
 
     transformProject.mockResolvedValue(response);
 
-    await renderForm();
+    renderForm();
 
-    const [idSelect] = screen.getAllByRole("listbox");
+    await user.selectOptions(screen.getByLabelText("Index"), "region");
 
-    await user.selectOptions(idSelect, "amount");
+    const [columnSelect, valueSelect] = getColumnSelects();
 
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
+    await user.selectOptions(columnSelect, "created_at");
+
+    await user.selectOptions(valueSelect, "amount");
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Submit",
+      }),
+    );
 
     await waitFor(() => {
       expect(mockEnterPreviewMode).toHaveBeenCalledWith(
         response.columns,
         response.rows,
         response.dtypes,
-        expect.objectContaining({
+        {
           projectId: "project-123",
-        }),
+          payload: {
+            operation_type: PIVOT_TABLES,
+            pivot_query: {
+              index: "region",
+              column: "created_at",
+              value: "amount",
+              aggfun: "sum",
+            },
+          },
+        },
+        {
+          total_rows: 1,
+          total_pages: 1,
+          page: 1,
+          page_size: 50,
+        },
       );
     });
   });
 
-  it("shows a processing state while the request is pending", async () => {
-    const user = userEvent.setup();
-    let resolveTransform;
-
-    transformProject.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveTransform = resolve;
-        }),
-    );
-
-    await renderForm();
-
-    const [idSelect] = screen.getAllByRole("listbox");
-
-    await user.selectOptions(idSelect, "amount");
-
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
-
-    expect(
-      screen.getByRole("button", {
-        name: "Processing...",
-      }),
-    ).toBeDisabled();
-
-    resolveTransform({
-      columns: [],
-      rows: [],
-      dtypes: {},
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", {
-          name: "Apply Melt",
-        }),
-      ).not.toBeDisabled();
-    });
-  });
-
-  it("shows the backend error message when the melt request fails", async () => {
+  it("shows the backend error message when the pivot request fails", async () => {
     const user = userEvent.setup();
 
     transformProject.mockRejectedValue({
       response: {
         data: {
-          detail: "Unable to melt dataset.",
+          detail: "Unable to build pivot table.",
         },
       },
     });
 
-    await renderForm();
+    renderForm();
 
-    const [idSelect] = screen.getAllByRole("listbox");
+    await user.selectOptions(screen.getByLabelText("Index"), "region");
 
-    await user.selectOptions(idSelect, "amount");
+    const [columnSelect, valueSelect] = getColumnSelects();
 
-    await user.click(screen.getByRole("button", { name: "Apply Melt" }));
+    await user.selectOptions(columnSelect, "created_at");
+
+    await user.selectOptions(valueSelect, "amount");
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Submit",
+      }),
+    );
 
     await waitFor(() => {
-      expect(screen.getByText("Unable to melt dataset.")).toBeInTheDocument();
+      expect(screen.getByText("Unable to build pivot table.")).toBeInTheDocument();
     });
 
     expect(mockEnterPreviewMode).not.toHaveBeenCalled();
   });
 
-  it("disables Apply Melt and displays Save Changes in preview mode", async () => {
-    await renderForm({
+  it("disables Submit and displays Save Changes in preview mode", () => {
+    renderForm({
       isPreviewMode: true,
     });
 
     expect(
       screen.getByRole("button", {
-        name: "Apply Melt",
+        name: "Submit",
       }),
     ).toBeDisabled();
 
@@ -332,7 +333,7 @@ describe("MeltForm", () => {
   it("calls the preview save handler when Save Changes is clicked", async () => {
     const user = userEvent.setup();
 
-    await renderForm({
+    renderForm({
       isPreviewMode: true,
     });
 
@@ -345,11 +346,30 @@ describe("MeltForm", () => {
     expect(mockHandleSave).toHaveBeenCalledTimes(1);
   });
 
+  it("shows saving state while preview changes are being saved", () => {
+    renderForm({
+      isPreviewMode: true,
+      saving: true,
+    });
+
+    expect(
+      screen.getByRole("button", {
+        name: "Saving...",
+      }),
+    ).toBeDisabled();
+
+    expect(
+      screen.getByRole("button", {
+        name: "Submit",
+      }),
+    ).toBeDisabled();
+  });
+
   it("cancels preview mode when Cancel is clicked during preview", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
 
-    await renderForm({
+    renderForm({
       isPreviewMode: true,
       onClose,
     });
@@ -361,6 +381,7 @@ describe("MeltForm", () => {
     );
 
     expect(mockCancelPreview).toHaveBeenCalledTimes(1);
+
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -368,7 +389,7 @@ describe("MeltForm", () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
 
-    await renderForm({
+    renderForm({
       isPreviewMode: false,
       onClose,
     });
@@ -380,6 +401,7 @@ describe("MeltForm", () => {
     );
 
     expect(onClose).toHaveBeenCalledTimes(1);
+
     expect(mockCancelPreview).not.toHaveBeenCalled();
   });
 });
