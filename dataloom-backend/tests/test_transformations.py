@@ -21,6 +21,7 @@ from app.services.transformation_service import (
     fill_empty,
     pivot_table,
     rename_column,
+    string_replace,
     trim_whitespace,
 )
 
@@ -1083,3 +1084,90 @@ class TestApplyLoggedTransformation:
     def test_unknown_action_type_raises_transformation_error(self, sample_df):
         with pytest.raises(TransformationError, match="Unknown action type"):
             apply_logged_transformation(sample_df, "nonExistentAction", {})
+
+
+class TestStringReplace:
+    def test_string_replace_basic(self):
+        df = pd.DataFrame(
+            {
+                "name": ["Alice", "Bob", "Charlie"],
+            }
+        )
+        result = string_replace(df, "name", "a", "x")
+
+        assert result["name"].tolist() == ["Alice", "Bob", "Chxrlie"]
+
+    def test_string_replace_multiple_occurrences(self):
+        df = pd.DataFrame(
+            {
+                "text": ["banana", "apple", "banana bread"],
+            }
+        )
+        result = string_replace(df, "text", "a", "o")
+
+        assert result["text"].tolist() == [
+            "bonono",
+            "opple",
+            "bonono breod",
+        ]
+
+    def test_string_replace_no_match(self):
+        df = pd.DataFrame(
+            {
+                "name": ["Alice", "Bob", "Charlie"],
+            }
+        )
+        result = string_replace(df, "name", "xyz", "test")
+
+        assert result["name"].tolist() == ["Alice", "Bob", "Charlie"]
+
+    def test_string_replace_numeric_column(self):
+        df = pd.DataFrame(
+            {
+                "Units": [12, 15, 120, 25],
+            }
+        )
+        result = string_replace(df, "Units", "12", "11")
+
+        assert result["Units"].tolist() == ["11", "15", "110", "25"]
+
+    def test_string_replace_with_empty_replacement(self):
+        df = pd.DataFrame(
+            {
+                "name": ["Alice", "Bob", "Charlie"],
+            }
+        )
+        result = string_replace(df, "name", "a", "")
+
+        assert result["name"].tolist() == ["Alice", "Bob", "Chrlie"]
+
+    def test_string_replace_nonexistent_column_raises(self):
+        df = pd.DataFrame(
+            {
+                "name": ["Alice", "Bob"],
+            }
+        )
+        with pytest.raises(TransformationError, match="not found"):
+            string_replace(df, "nonexistent", "a", "b")
+
+    def test_string_replace_special_characters(self):
+        df = pd.DataFrame(
+            {
+                "text": ["a.b", "a+b", "a*b"],
+            }
+        )
+        result = string_replace(df, "text", ".", "-")
+
+        assert result["text"].tolist() == ["a-b", "a+b", "a*b"]
+
+    def test_string_replace_does_not_modify_original_dataframe(self):
+        df = pd.DataFrame(
+            {
+                "name": ["Alice", "Bob"],
+            }
+        )
+        original = df.copy()
+
+        string_replace(df, "name", "A", "X")
+
+        pd.testing.assert_frame_equal(df, original)
